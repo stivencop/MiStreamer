@@ -1,53 +1,144 @@
-name: Compilar MiStreamer
+name: Compilar MiStreamer Windows
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+      - master
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    name: Build Windows x64
     runs-on: windows-latest
 
     steps:
       - name: Descargar repositorio
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Instalar .NET 8
-        uses: actions/setup-dotnet@v6
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
 
-      - name: Restaurar paquetes
-        run: dotnet restore MiStreamer.csproj
-
-      - name: Compilar EXE portable
-        run: >
-          dotnet publish MiStreamer.csproj
-          -c Release
-          -r win-x64
-          --self-contained true
-          -p:PublishSingleFile=true
-          -p:DebugType=None
-          -p:DebugSymbols=false
-          -o publish
-
-      - name: Copiar FFmpeg
+      - name: Mostrar archivos del repositorio
         shell: pwsh
         run: |
-          if (Test-Path "ffmpeg.exe") {
-            Copy-Item "ffmpeg.exe" "publish\ffmpeg.exe"
+          Write-Host "Contenido del repositorio:"
+          Get-ChildItem -Path . -Recurse -File |
+            Select-Object -ExpandProperty FullName
+
+      - name: Buscar proyecto C#
+        shell: pwsh
+        run: |
+          $projects = Get-ChildItem -Path . -Filter *.csproj -Recurse -File
+
+          if (-not $projects -or $projects.Count -eq 0) {
+            Write-Host ""
+            Write-Host "ERROR: No se encontro ningun archivo .csproj."
+            Write-Host "Debes subir el proyecto C# completo al repositorio."
+            Write-Host ""
+            exit 1
           }
 
-      - name: Crear ZIP
+          # Preferir MiStreamer.csproj si existe.
+          $project = $projects |
+            Where-Object { $_.Name -ieq "MiStreamer.csproj" } |
+            Select-Object -First 1
+
+          if (-not $project) {
+            $project = $projects | Select-Object -First 1
+          }
+
+          Write-Host "Proyecto seleccionado:"
+          Write-Host $project.FullName
+
+          "PROJECT_PATH=$($project.FullName)" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Restaurar paquetes
         shell: pwsh
         run: |
-          Compress-Archive -Path publish\* -DestinationPath MiStreamer-Windows-x64.zip
+          dotnet restore "$env:PROJECT_PATH"
 
-      - name: Subir programa compilado
+      - name: Compilar EXE portable
+        shell: pwsh
+        run: |
+          dotnet publish "$env:PROJECT_PATH" `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:PublishReadyToRun=false `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            -p:EnableCompressionInSingleFile=true `
+            -o "$env:GITHUB_WORKSPACE\publish"
+
+      - name: Verificar ejecutable generado
+        shell: pwsh
+        run: |
+          Write-Host "Archivos publicados:"
+          Get-ChildItem "$env:GITHUB_WORKSPACE\publish"
+
+          $exe = Get-ChildItem "$env:GITHUB_WORKSPACE\publish" `
+            -Filter *.exe -File |
+            Where-Object { $_.Name -notlike "ffmpeg*" } |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            Write-Error "No se genero el ejecutable de MiStreamer."
+            exit 1
+          }
+
+          Write-Host "EXE generado: $($exe.FullName)"
+
+      - name: Copiar FFmpeg si esta incluido en el repositorio
+        shell: pwsh
+        run: |
+          $ffmpeg = Get-ChildItem -Path "$env:GITHUB_WORKSPACE" `
+            -Filter ffmpeg.exe -Recurse -File |
+            Where-Object {
+              $_.FullName -notlike "$env:GITHUB_WORKSPACE\publish\*"
+            } |
+            Select-Object -First 1
+
+          if ($ffmpeg) {
+            Copy-Item $ffmpeg.FullName `
+              "$env:GITHUB_WORKSPACE\publish\ffmpeg.exe" `
+              -Force
+
+            Write-Host "ffmpeg.exe copiado al paquete final."
+          }
+          else {
+            Write-Host "ADVERTENCIA: ffmpeg.exe no esta en el repositorio."
+            Write-Host "MiStreamer se compilara, pero el streaming no podra arrancar hasta que ffmpeg.exe este junto al EXE."
+          }
+
+      - name: Crear ZIP portable
+        shell: pwsh
+        run: |
+          $zip = "$env:GITHUB_WORKSPACE\MiStreamer-Windows-x64.zip"
+
+          if (Test-Path $zip) {
+            Remove-Item $zip -Force
+          }
+
+          Compress-Archive `
+            -Path "$env:GITHUB_WORKSPACE\publish\*" `
+            -DestinationPath $zip `
+            -CompressionLevel Optimal
+
+          Write-Host "ZIP creado:"
+          Write-Host $zip
+
+      - name: Subir ZIP compilado
         uses: actions/upload-artifact@v4
         with:
           name: MiStreamer-Windows-x64
           path: MiStreamer-Windows-x64.zip
           if-no-files-found: error
+          retention-days: 30
