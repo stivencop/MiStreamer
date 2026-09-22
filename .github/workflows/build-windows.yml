@@ -1,1 +1,53 @@
+name: Compilar MiStreamer
 
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v7
+
+      - name: Instalar .NET 8
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restaurar paquetes
+        run: dotnet restore MiStreamer.csproj
+
+      - name: Compilar EXE portable
+        run: >
+          dotnet publish MiStreamer.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:DebugType=None
+          -p:DebugSymbols=false
+          -o publish
+
+      - name: Copiar FFmpeg
+        shell: pwsh
+        run: |
+          if (Test-Path "ffmpeg.exe") {
+            Copy-Item "ffmpeg.exe" "publish\ffmpeg.exe"
+          }
+
+      - name: Crear ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path publish\* -DestinationPath MiStreamer-Windows-x64.zip
+
+      - name: Subir programa compilado
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiStreamer-Windows-x64
+          path: MiStreamer-Windows-x64.zip
+          if-no-files-found: error
